@@ -1,12 +1,13 @@
-import 'package:dart_vlc/src/channel.dart';
-import 'package:flutter/material.dart';
-
+// ignore_for_file: implementation_imports
 import 'dart:async';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'package:flutter/material.dart';
+import 'package:dart_vlc/dart_vlc.dart';
+import 'package:dart_vlc/src/widgets/controls.dart';
 
-import 'package:dart_vlc/src/player.dart';
-import 'controls.dart';
+/// Internally used map to keep [GlobalKey]s for [Video]'s [ControlState]s.
+Map<int, GlobalKey<ControlState>> controls = {};
 
 /// Internally used map to keep [StreamController]s for [Video] [Widget]s.
 Map<int, StreamController<VideoFrame>> videoStreamControllers = {};
@@ -34,14 +35,14 @@ class VideoFrame {
 ///
 /// ```dart
 /// class _MyAppState extends State<MyApp> {
-///   Player player = new Player(id: 0);
+///   Player player = Player(id: 0);
 ///
 ///   @override
 ///   Widget build(BuildContext context) {
 ///     return Scaffold(
 ///       body: Center(
 ///         child: Video(
-///           playerId: 0,
+///           player: player,
 ///           height: 420.0,
 ///           width: 320.0
 ///         ),
@@ -56,17 +57,30 @@ class VideoFrame {
 /// A global [Key] may be used for this purpose.
 ///
 class Video extends StatefulWidget {
-  /// Id of the [Player] whose [Video] output should be shown.
-  final int playerId;
+  /// The [Player] whose [Video] output should be shown.
+  final Player player;
 
   /// Width of the viewport.
-  final double width;
+  /// Defaults to the width of the parent.
+  final double? width;
 
   /// Height of the viewport.
-  final double height;
+  /// Defaults to the height of the parent.
+  final double? height;
+
+  /// How to inscribe the picture box into the player viewport.
+  /// Defaults to [BoxFit.contain].
+  final BoxFit fit;
+
+  /// How to align the picture box within the player viewport.
+  /// Defaults to [Alignment.center]
+  final AlignmentGeometry alignment;
 
   /// Scale.
   final double scale;
+
+  /// Filter quality.
+  final FilterQuality filterQuality;
 
   // Built-In video controls.
   final bool showControls;
@@ -109,9 +123,12 @@ class Video extends StatefulWidget {
   final bool showTimeLeft;
 
   Video({
-    required this.playerId,
-    required this.width,
-    required this.height,
+    @Deprecated('playerId is deprecated. Use player instead.') int? playerId,
+    Player? player,
+    this.width,
+    this.height,
+    this.fit: BoxFit.contain,
+    this.alignment: Alignment.center,
     this.scale: 1.0,
     this.showControls: true,
     this.progressBarActiveColor,
@@ -126,92 +143,163 @@ class Video extends StatefulWidget {
     this.progressBarThumbGlowRadius = 15.0,
     this.showTimeLeft = false,
     this.progressBarTextStyle = const TextStyle(),
+    this.filterQuality = FilterQuality.low,
     Key? key,
-  }) : super(key: key);
+  })  : player = player ?? players[playerId]! as Player,
+        super(key: key);
 
-  VideoState createState() => VideoState();
+  _VideoStateBase createState() => _VideoStateTexture();
 }
 
-class VideoState extends State<Video> {
+abstract class _VideoStateBase extends State<Video>
+    with AutomaticKeepAliveClientMixin {
+  GlobalKey<ControlState> controlKey = GlobalKey<ControlState>();
+
+  int get playerId => widget.player.id;
+
+  @override
+  void initState() {
+    if (widget.showControls) controls[playerId] = controlKey;
+    super.initState();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return Container(
+      width: widget.width ?? double.infinity,
+      height: widget.height ?? double.infinity,
+      color: Colors.black,
+      child: widget.showControls
+          ? Control(
+              key: controlKey,
+              player: widget.player,
+              progressBarThumbRadius: widget.progressBarThumbRadius,
+              progressBarThumbGlowRadius: widget.progressBarThumbGlowRadius,
+              progressBarActiveColor: widget.progressBarActiveColor,
+              progressBarInactiveColor: widget.progressBarInactiveColor,
+              progressBarThumbColor: widget.progressBarThumbColor,
+              progressBarThumbGlowColor: widget.progressBarThumbGlowColor,
+              volumeActiveColor: widget.volumeActiveColor,
+              volumeInactiveColor: widget.volumeInactiveColor,
+              volumeBackgroundColor: widget.volumeBackgroundColor,
+              volumeThumbColor: widget.volumeThumbColor,
+              showTimeLeft: widget.showTimeLeft,
+              progressBarTextStyle: widget.progressBarTextStyle,
+              child: present(),
+            )
+          : present(),
+    );
+  }
+
+  Widget present();
+}
+
+/// Texture based Video playback.
+class _VideoStateTexture extends _VideoStateBase {
+  StreamSubscription? _videoDimensionsSubscription;
+  double? _videoWidth;
+  double? _videoHeight;
+
+  @override
+  void initState() {
+    _videoDimensionsSubscription =
+        widget.player.videoDimensionsStream.listen((dimensions) {
+      setState(() {
+        _videoWidth = dimensions.width.toDouble();
+        _videoHeight = dimensions.height.toDouble();
+      });
+    });
+    super.initState();
+    if (mounted) setState(() {});
+  }
+
+  Widget present() {
+    return ValueListenableBuilder<int?>(
+        valueListenable: widget.player.textureId,
+        builder: (context, textureId, _) {
+          if (textureId == null ||
+              _videoWidth == null ||
+              _videoHeight == null) {
+            return Container();
+          }
+
+          return SizedBox.expand(
+              child: ClipRect(
+                  child: FittedBox(
+                      alignment: widget.alignment,
+                      fit: widget.fit,
+                      child: SizedBox(
+                          width: _videoWidth,
+                          height: _videoHeight,
+                          child: Texture(
+                            textureId: textureId,
+                            filterQuality: widget.filterQuality,
+                          )))));
+        });
+  }
+
+  @override
+  Future<void> dispose() async {
+    _videoDimensionsSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  bool get wantKeepAlive => true;
+}
+
+/// NativePorts & decodeImageFromPixels based video playback.
+// ignore: unused_element
+class _VideoStateFallback extends _VideoStateBase {
   Widget? videoFrameRawImage;
-  GlobalKey<ControlState> controlKey = new GlobalKey<ControlState>();
 
   Future<RawImage> getVideoFrameRawImage(VideoFrame videoFrame) async {
-    Completer<ui.Image> imageCompleter = new Completer<ui.Image>();
+    Completer<ui.Image> imageCompleter = Completer<ui.Image>();
     ui.decodeImageFromPixels(
-      videoFrame.byteArray,
-      videoFrame.videoWidth,
-      videoFrame.videoHeight,
-      ui.PixelFormat.bgra8888,
-      (ui.Image _image) => imageCompleter.complete(_image),
-      rowBytes: 4 * videoFrame.videoWidth,
-      targetWidth: widget.width.toInt(),
-      targetHeight: widget.height.toInt(),
-    );
+        videoFrame.byteArray,
+        videoFrame.videoWidth,
+        videoFrame.videoHeight,
+        ui.PixelFormat.rgba8888,
+        (ui.Image _image) => imageCompleter.complete(_image),
+        rowBytes: 4 * videoFrame.videoWidth);
     ui.Image image = await imageCompleter.future;
-    return new RawImage(
+
+    return RawImage(
       image: image,
-      height: widget.height,
-      width: widget.width,
+      alignment: widget.alignment,
+      fit: widget.fit,
       scale: widget.scale,
-      filterQuality: FilterQuality.low,
+      filterQuality: widget.filterQuality,
     );
   }
 
   @override
   Future<void> dispose() async {
+    videoStreamControllers[playerId]?.close();
     super.dispose();
-    await videoStreamControllers[widget.playerId]?.close();
   }
 
   @override
   void initState() {
-    super.initState();
-    if (widget.showControls) controls[widget.playerId] = this.controlKey;
-    videoStreamControllers[widget.playerId] =
-        new StreamController<VideoFrame>.broadcast();
-    videoStreamControllers[widget.playerId]
+    videoStreamControllers[playerId] = StreamController<VideoFrame>.broadcast();
+    videoStreamControllers[playerId]
         ?.stream
         .listen((VideoFrame videoFrame) async {
-      this.videoFrameRawImage = await this.getVideoFrameRawImage(videoFrame);
-      this.setState(() {});
+      videoFrameRawImage = await getVideoFrameRawImage(videoFrame);
+      if (mounted && !(videoStreamControllers[playerId]?.isClosed ?? true))
+        setState(() {});
     });
+    super.initState();
+    if (mounted) setState(() {});
+  }
+
+  Widget present() {
+    return videoFrameRawImage != null
+        ? SizedBox.expand(child: ClipRect(child: videoFrameRawImage))
+        : Container();
   }
 
   @override
-  Widget build(BuildContext context) {
-    if (widget.showControls) {
-      return Control(
-        key: this.controlKey,
-        playerId: widget.playerId,
-        height: widget.height,
-        width: widget.width,
-        progressBarThumbRadius: widget.progressBarThumbRadius,
-        progressBarThumbGlowRadius: widget.progressBarThumbGlowRadius,
-        progressBarActiveColor: widget.progressBarActiveColor,
-        progressBarInactiveColor: widget.progressBarInactiveColor,
-        progressBarThumbColor: widget.progressBarThumbColor,
-        progressBarThumbGlowColor: widget.progressBarThumbGlowColor,
-        volumeActiveColor: widget.volumeActiveColor,
-        volumeInactiveColor: widget.volumeInactiveColor,
-        volumeBackgroundColor: widget.volumeBackgroundColor,
-        volumeThumbColor: widget.volumeThumbColor,
-        showTimeLeft: widget.showTimeLeft,
-        progressBarTextStyle: widget.progressBarTextStyle,
-        child: this.videoFrameRawImage ??
-            Container(
-              color: Colors.black,
-              height: widget.height,
-              width: widget.width,
-            ),
-      );
-    } else {
-      return this.videoFrameRawImage ??
-          Container(
-            color: Colors.black,
-            height: widget.height,
-            width: widget.width,
-          );
-    }
-  }
+  bool get wantKeepAlive => true;
 }

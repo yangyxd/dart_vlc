@@ -1,32 +1,32 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:dart_vlc/dart_vlc.dart';
 
 void main() {
-  runApp(DartVLC());
+  DartVLC.initialize();
+  runApp(DartVLCExample());
 }
 
-class DartVLC extends StatefulWidget {
+class DartVLCExample extends StatefulWidget {
   @override
-  _DartVLCState createState() => _DartVLCState();
+  DartVLCExampleState createState() => DartVLCExampleState();
 }
 
-class _DartVLCState extends State<DartVLC> {
-  Player player = Player(
-    id: 0,
-    videoWidth: 480,
-    videoHeight: 360,
-  );
+class DartVLCExampleState extends State<DartVLCExample> {
+  Player player = Player(id: 0);
   MediaType mediaType = MediaType.file;
   CurrentState current = new CurrentState();
   PositionState position = new PositionState();
   PlaybackState playback = new PlaybackState();
   GeneralState general = new GeneralState();
+  VideoDimensions videoDimensions = new VideoDimensions(0, 0);
   List<Media> medias = <Media>[];
   List<Device> devices = <Device>[];
   TextEditingController controller = new TextEditingController();
   TextEditingController metasController = new TextEditingController();
+  double bufferingProgress = 0.0;
   Media? metasMedia;
 
   @override
@@ -45,22 +45,52 @@ class _DartVLCState extends State<DartVLC> {
       this.player.generalStream.listen((general) {
         this.setState(() => this.general = general);
       });
+      this.player.videoDimensionsStream.listen((videoDimensions) {
+        this.setState(() {
+          this.videoDimensions = videoDimensions;
+        });
+      });
+      this.player.bufferingProgressStream.listen(
+        (bufferingProgress) {
+          this.setState(() {
+            this.bufferingProgress = bufferingProgress;
+          });
+        },
+      );
     }
   }
 
   @override
   Future<void> didChangeDependencies() async {
     super.didChangeDependencies();
-    this.devices = await Devices.all;
-    Equalizer equalizer = await Equalizer.createMode(EqualizerMode.live);
-    await equalizer.setPreAmp(10.0);
-    await equalizer.setBandAmp(31.25, 10.0);
-    player.setEqualizer(equalizer);
+    this.devices = Devices.all;
+    Equalizer equalizer = Equalizer.createMode(EqualizerMode.live);
+    equalizer.setPreAmp(10.0);
+    equalizer.setBandAmp(31.25, 10.0);
+    this.player.setEqualizer(equalizer);
     this.setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
+    bool isTablet;
+    bool isPhone;
+
+    final double devicePixelRatio = ui.window.devicePixelRatio;
+    final ui.Size size = ui.window.physicalSize;
+    final double width = size.width;
+    final double height = size.height;
+
+    if (devicePixelRatio < 2 && (width >= 1000 || height >= 1000)) {
+      isTablet = true;
+      isPhone = false;
+    } else if (devicePixelRatio == 2 && (width >= 1920 || height >= 1920)) {
+      isTablet = true;
+      isPhone = false;
+    } else {
+      isTablet = false;
+      isPhone = true;
+    }
     return MaterialApp(
       home: Scaffold(
         appBar: AppBar(
@@ -80,9 +110,9 @@ class _DartVLCState extends State<DartVLC> {
                   clipBehavior: Clip.antiAlias,
                   elevation: 2.0,
                   child: Video(
-                    playerId: 0,
-                    width: 640,
-                    height: 480,
+                    player: player,
+                    width: isPhone ? 320 : 640,
+                    height: isPhone ? 240 : 480,
                     volumeThumbColor: Colors.blue,
                     volumeActiveColor: Colors.blue,
                   ),
@@ -99,9 +129,10 @@ class _DartVLCState extends State<DartVLC> {
                     mainAxisAlignment: MainAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      if (isPhone) _controls(context, isPhone),
                       Card(
                         elevation: 2.0,
-                        margin: EdgeInsets.all(10.0),
+                        margin: EdgeInsets.all(4.0),
                         child: Container(
                           margin: EdgeInsets.all(16.0),
                           child: Column(
@@ -127,8 +158,7 @@ class _DartVLCState extends State<DartVLC> {
                                             hintStyle: TextStyle(
                                               fontSize: 14.0,
                                             ),
-                                            hintText:
-                                                'Media resource location.',
+                                            hintText: 'Enter Media path.',
                                           ),
                                         ),
                                       ),
@@ -177,26 +207,22 @@ class _DartVLCState extends State<DartVLC> {
                                             if (this.mediaType ==
                                                 MediaType.file) {
                                               this.medias.add(
-                                                    await Media.file(new File(
-                                                        controller.text)),
+                                                    Media.file(new File(
+                                                        controller.text
+                                                            .replaceAll(
+                                                                '"', ''))),
                                                   );
                                             } else if (this.mediaType ==
                                                 MediaType.network) {
                                               this.medias.add(
-                                                    await Media.network(
-                                                        controller.text),
-                                                  );
-                                            } else if (this.mediaType ==
-                                                MediaType.asset) {
-                                              this.medias.add(
-                                                    await Media.asset(
+                                                    Media.network(
                                                         controller.text),
                                                   );
                                             }
                                             this.setState(() {});
                                           },
                                           child: Text(
-                                            'Add',
+                                            'Add to Playlist',
                                             style: TextStyle(
                                               fontSize: 14.0,
                                             ),
@@ -243,14 +269,14 @@ class _DartVLCState extends State<DartVLC> {
                                       ElevatedButton(
                                         onPressed: () => this.setState(() {
                                           this.player.open(
-                                            new Playlist(
-                                              medias: this.medias,
-                                              playlistMode:PlaylistMode.single
-                                            ),
-                                          );
+                                                new Playlist(
+                                                    medias: this.medias,
+                                                    playlistMode:
+                                                        PlaylistMode.single),
+                                              );
                                         }),
                                         child: Text(
-                                          'Open',
+                                          'Open into Player',
                                           style: TextStyle(
                                             fontSize: 14.0,
                                           ),
@@ -262,7 +288,7 @@ class _DartVLCState extends State<DartVLC> {
                                           this.medias.clear();
                                         }),
                                         child: Text(
-                                          'Clear',
+                                          'Clear the list',
                                           style: TextStyle(
                                             fontSize: 14.0,
                                           ),
@@ -296,14 +322,23 @@ class _DartVLCState extends State<DartVLC> {
                                 color: Colors.transparent,
                               ),
                               Slider(
-                                min: 0,
-                                max: this.position.duration?.inMilliseconds.toDouble() ?? 1.0,
-                                value: this.position.position?.inMilliseconds.toDouble() ?? 0.0,
-                                onChanged: (double position) =>
-                                  this.player.seek(
-                                    Duration(milliseconds: position.toInt())
-                                  )
-                              ),
+                                  min: 0,
+                                  max: this
+                                          .position
+                                          .duration
+                                          ?.inMilliseconds
+                                          .toDouble() ??
+                                      1.0,
+                                  value: this
+                                          .position
+                                          .position
+                                          ?.inMilliseconds
+                                          .toDouble() ??
+                                      0.0,
+                                  onChanged: (double position) => this
+                                      .player
+                                      .seek(Duration(
+                                          milliseconds: position.toInt()))),
                               Text('Event streams.'),
                               Divider(
                                 height: 8.0,
@@ -350,6 +385,14 @@ class _DartVLCState extends State<DartVLC> {
                                   TableRow(children: [
                                     Text('player.current.medias'),
                                     Text('${this.current.medias}')
+                                  ]),
+                                  TableRow(children: [
+                                    Text('player.videoDimensions'),
+                                    Text('${this.videoDimensions}')
+                                  ]),
+                                  TableRow(children: [
+                                    Text('player.bufferingProgress'),
+                                    Text('${this.bufferingProgress}')
                                   ]),
                                 ],
                               ),
@@ -422,7 +465,7 @@ class _DartVLCState extends State<DartVLC> {
                                         hintStyle: TextStyle(
                                           fontSize: 14.0,
                                         ),
-                                        hintText: 'Media resource location.',
+                                        hintText: 'Enter Media path.',
                                       ),
                                     ),
                                   ),
@@ -468,18 +511,13 @@ class _DartVLCState extends State<DartVLC> {
                                     child: ElevatedButton(
                                       onPressed: () async {
                                         if (this.mediaType == MediaType.file) {
-                                          this.metasMedia = await Media.file(
+                                          this.metasMedia = Media.file(
                                               new File(
                                                   this.metasController.text),
                                               parse: true);
                                         } else if (this.mediaType ==
                                             MediaType.network) {
-                                          this.metasMedia = await Media.network(
-                                              this.metasController.text,
-                                              parse: true);
-                                        } else if (this.mediaType ==
-                                            MediaType.asset) {
-                                          this.metasMedia = await Media.asset(
+                                          this.metasMedia = Media.network(
                                               this.metasController.text,
                                               parse: true);
                                         }
@@ -510,206 +548,226 @@ class _DartVLCState extends State<DartVLC> {
                           ),
                         ),
                       ),
+                      if (isPhone) _playlist(context),
                     ],
                   ),
                 ),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Card(
-                        elevation: 2.0,
-                        margin: EdgeInsets.all(4.0),
-                        child: Container(
-                          margin: EdgeInsets.all(16.0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('Playback controls.'),
-                              Divider(
-                                height: 8.0,
-                                color: Colors.transparent,
-                              ),
-                              Row(
-                                children: [
-                                  ElevatedButton(
-                                    onPressed: () => this.player.play(),
-                                    child: Text(
-                                      'play',
-                                      style: TextStyle(
-                                        fontSize: 14.0,
-                                      ),
-                                    ),
-                                  ),
-                                  SizedBox(width: 12.0),
-                                  ElevatedButton(
-                                    onPressed: () => this.player.pause(),
-                                    child: Text(
-                                      'pause',
-                                      style: TextStyle(
-                                        fontSize: 14.0,
-                                      ),
-                                    ),
-                                  ),
-                                  SizedBox(width: 12.0),
-                                  ElevatedButton(
-                                    onPressed: () => this.player.playOrPause(),
-                                    child: Text(
-                                      'playOrPause',
-                                      style: TextStyle(
-                                        fontSize: 14.0,
-                                      ),
-                                    ),
-                                  ),
-                                  SizedBox(width: 12.0),
-                                  ElevatedButton(
-                                    onPressed: () => this.player.stop(),
-                                    child: Text(
-                                      'stop',
-                                      style: TextStyle(
-                                        fontSize: 14.0,
-                                      ),
-                                    ),
-                                  ),
-                                  SizedBox(width: 12.0),
-                                  ElevatedButton(
-                                    onPressed: () => this.player.next(),
-                                    child: Text(
-                                      'next',
-                                      style: TextStyle(
-                                        fontSize: 14.0,
-                                      ),
-                                    ),
-                                  ),
-                                  SizedBox(width: 12.0),
-                                  ElevatedButton(
-                                    onPressed: () => this.player.back(),
-                                    child: Text(
-                                      'back',
-                                      style: TextStyle(
-                                        fontSize: 14.0,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              Divider(
-                                height: 12.0,
-                                color: Colors.transparent,
-                              ),
-                              Divider(
-                                height: 12.0,
-                              ),
-                              Text('Volume control.'),
-                              Divider(
-                                height: 8.0,
-                                color: Colors.transparent,
-                              ),
-                              Slider(
-                                min: 0.0,
-                                max: 1.0,
-                                value: this.player.general.volume,
-                                onChanged: (volume) {
-                                  this.player.setVolume(volume);
-                                  this.setState(() {});
-                                },
-                              ),
-                              Text('Playback rate control.'),
-                              Divider(
-                                height: 8.0,
-                                color: Colors.transparent,
-                              ),
-                              Slider(
-                                min: 0.5,
-                                max: 1.5,
-                                value: this.player.general.rate,
-                                onChanged: (rate) {
-                                  this.player.setRate(rate);
-                                  this.setState(() {});
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      Card(
-                        elevation: 2.0,
-                        margin: EdgeInsets.all(4.0),
-                        child: Container(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                margin: EdgeInsets.only(left: 16.0, top: 16.0),
-                                alignment: Alignment.topLeft,
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text('Playlist manipulation.'),
-                                    Divider(
-                                      height: 12.0,
-                                      color: Colors.transparent,
-                                    ),
-                                    Divider(
-                                      height: 12.0,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Container(
-                                height: 456.0,
-                                child: ReorderableListView(
-                                  shrinkWrap: true,
-                                  onReorder:
-                                      (int initialIndex, int finalIndex) async {
-                                    /// 🙏🙏🙏
-                                    /// https://github.com/flutter/flutter/issues/24786
-                                    /// https://stackoverflow.com/a/54164333/12825435
-                                    if (finalIndex > this.current.medias.length)
-                                      finalIndex = this.current.medias.length;
-                                    if (initialIndex < finalIndex) finalIndex--;
+                if (isTablet)
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _controls(context, isPhone),
+                        _playlist(context),
+                      ],
+                    ),
+                  ),
+              ],
+            )
+          ],
+        ),
+      ),
+    );
+  }
 
-                                    await this.player.move(initialIndex, finalIndex);
-                                    this.setState(() {});
-                                  },
-                                  scrollDirection: Axis.vertical,
-                                  padding:
-                                      const EdgeInsets.symmetric(vertical: 8.0),
-                                  children: List.generate(
-                                    this.current.medias.length,
-                                    (int index) => new ListTile(
-                                      key: Key(index.toString()),
-                                      leading: Text(
-                                        index.toString(),
-                                        style: TextStyle(fontSize: 14.0),
-                                      ),
-                                      title: Text(
-                                        this.current.medias[index].resource,
-                                        style: TextStyle(fontSize: 14.0),
-                                      ),
-                                      subtitle: Text(
-                                        this
-                                            .current
-                                            .medias[index]
-                                            .mediaType
-                                            .toString(),
-                                        style: TextStyle(fontSize: 14.0),
-                                      ),
-                                    ),
-                                    growable: true,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
+  Widget _controls(BuildContext context, bool isPhone) {
+    return Card(
+      elevation: 2.0,
+      margin: EdgeInsets.all(4.0),
+      child: Container(
+        margin: EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Playback controls.'),
+            Divider(
+              height: 8.0,
+              color: Colors.transparent,
+            ),
+            Row(
+              children: [
+                ElevatedButton(
+                  onPressed: () => this.player.play(),
+                  child: Text(
+                    'play',
+                    style: TextStyle(
+                      fontSize: 14.0,
+                    ),
+                  ),
+                ),
+                SizedBox(width: 12.0),
+                ElevatedButton(
+                  onPressed: () => this.player.pause(),
+                  child: Text(
+                    'pause',
+                    style: TextStyle(
+                      fontSize: 14.0,
+                    ),
+                  ),
+                ),
+                SizedBox(width: 12.0),
+                ElevatedButton(
+                  onPressed: () => this.player.playOrPause(),
+                  child: Text(
+                    'playOrPause',
+                    style: TextStyle(
+                      fontSize: 14.0,
+                    ),
+                  ),
+                ),
+                SizedBox(width: 12.0),
+              ],
+            ),
+            SizedBox(
+              height: 8.0,
+            ),
+            Row(
+              children: [
+                ElevatedButton(
+                  onPressed: () => this.player.stop(),
+                  child: Text(
+                    'stop',
+                    style: TextStyle(
+                      fontSize: 14.0,
+                    ),
+                  ),
+                ),
+                SizedBox(width: 12.0),
+                ElevatedButton(
+                  onPressed: () => this.player.next(),
+                  child: Text(
+                    'next',
+                    style: TextStyle(
+                      fontSize: 14.0,
+                    ),
+                  ),
+                ),
+                SizedBox(width: 12.0),
+                ElevatedButton(
+                  onPressed: () => this.player.back(),
+                  child: Text(
+                    'back',
+                    style: TextStyle(
+                      fontSize: 14.0,
+                    ),
                   ),
                 ),
               ],
-            )
+            ),
+            Divider(
+              height: 12.0,
+              color: Colors.transparent,
+            ),
+            Divider(
+              height: 12.0,
+            ),
+            Text('Volume control.'),
+            Divider(
+              height: 8.0,
+              color: Colors.transparent,
+            ),
+            Slider(
+              min: 0.0,
+              max: 1.0,
+              value: this.player.general.volume,
+              onChanged: (volume) {
+                this.player.setVolume(volume);
+                this.setState(() {});
+              },
+            ),
+            Text('Playback rate control.'),
+            Divider(
+              height: 8.0,
+              color: Colors.transparent,
+            ),
+            Slider(
+              min: 0.5,
+              max: 1.5,
+              value: this.player.general.rate,
+              onChanged: (rate) {
+                this.player.setRate(rate);
+                this.setState(() {});
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _playlist(BuildContext context) {
+    return Card(
+      elevation: 2.0,
+      margin: EdgeInsets.all(4.0),
+      child: Container(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              margin: EdgeInsets.only(left: 16.0, top: 16.0),
+              alignment: Alignment.topLeft,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Playlist manipulation.'),
+                  Divider(
+                    height: 12.0,
+                    color: Colors.transparent,
+                  ),
+                  Divider(
+                    height: 12.0,
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              height: 456.0,
+              child: ReorderableListView(
+                shrinkWrap: true,
+                onReorder: (int initialIndex, int finalIndex) async {
+                  /// 🙏🙏🙏
+                  /// In the name of God,
+                  /// With all due respect,
+                  /// I ask all Flutter engineers to please fix this issue.
+                  /// Peace.
+                  /// 🙏🙏🙏
+                  ///
+                  /// Issue:
+                  /// https://github.com/flutter/flutter/issues/24786
+                  /// Prevention:
+                  /// https://stackoverflow.com/a/54164333/12825435
+                  ///
+                  if (finalIndex > this.current.medias.length)
+                    finalIndex = this.current.medias.length;
+                  if (initialIndex < finalIndex) finalIndex--;
+
+                  this.player.move(initialIndex, finalIndex);
+                  this.setState(() {});
+                },
+                scrollDirection: Axis.vertical,
+                padding: const EdgeInsets.symmetric(vertical: 8.0),
+                children: List.generate(
+                  this.current.medias.length,
+                  (int index) => new ListTile(
+                    key: Key(index.toString()),
+                    leading: Text(
+                      index.toString(),
+                      style: TextStyle(fontSize: 14.0),
+                    ),
+                    title: Text(
+                      this.current.medias[index].resource,
+                      style: TextStyle(fontSize: 14.0),
+                    ),
+                    subtitle: Text(
+                      this.current.medias[index].mediaType.toString(),
+                      style: TextStyle(fontSize: 14.0),
+                    ),
+                  ),
+                  growable: true,
+                ),
+              ),
+            ),
           ],
         ),
       ),
